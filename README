@@ -1,0 +1,95 @@
+		dnswalk 2.0 - August 4, 1997
+
+Author: David Barr <barr@cis.ohio-state.edu>
+$Id: README,v 1.6 1997/08/04 19:09:34 barr Exp barr $
+
+INTRO
+
+dnswalk is a DNS debugger.  It performs zone transfers of specified
+domains, and checks the database in numerous ways for internal
+consistency, as well as accuracy.
+
+dnswalk requires perl and the Net::DNS Perl package.  If you do not have
+these, get them.  (perl is assumed to be in /usr/local/bin, edit the first
+line of dnswalk if it is not)
+
+They can be found by at:
+http://www.perl.com/perl/
+
+dnswalk used to require 'dig' (part of the BIND distribution).  However,
+different versions of dig gave output which was ever so slightly different,
+causing dnswalk to break.  (This is usually easy to fix, even in a
+backward-compatible fashion, but it was annoying nonetheless)  Also,
+using an external program made error checking more difficult and not
+very reliable.  Since error checking is the heart of what dnswalk is about,
+this wasn't good.  I finally got off my duff and ported dnswalk to Michael
+Fuhr's Net::DNS package, something I've been wanting to do for a while.
+(actually another reason I waited so long was the Net::DNS package wasn't
+complete enough initially for for a complete port.)
+
+
+	dnswalk is not for the faint of heart.  It should NOT be used
+without a firm knowledge of the DNS RFC's.  The warnings and errors
+must be interpreted within the context they are being used.  Something
+may be flagged as a warning, but in reality it is a really bad error.
+Conversely dnswalk will flag things as warnings and possibly even
+errors, but they may actually be perfectly "legal" or normal in your
+specific situation.  dnswalk is not an AI engine.  It just provides
+useful information which you need to interpret. If you use this tool
+for cracking or otherwise evil purposes, the author hereby considers
+you a slime-ball.  See the end of this README file for a list of good
+reading material.
+
+	dnswalk is not a replacement for doc, although dnswalk is starting
+to incorporate some of the things doc checks for.  dnswalk was written to
+check individual database entries, while 'doc' ensures that the overall
+database structure and authority records are consistent.  dnswalk may
+not even function correctly (or find real problems) if authority records
+are missing or incorrect.
+
+	This program may be freely distributed, as long as this notice
+and documentation are distributed with the program.  This program is
+released as-is, with no warranty expressed or implied.  Some assembly
+required, contents may settle during shipment.  This program can be
+found at
+
+http://www.cis.ohio-state.edu/~barr/dnswalk/
+
+	dnswalk tends to produce lots of output, so I'd suggest
+redirecting this into a file of your choice.  I debated using doc's
+strategy of automatically putting it in a logfile, but decided not
+to.  (The author reserves the right to change his mind)  For small,
+mostly-correct domains it is pretty manageable, however.  For larger
+domains, use the included 'do-dnswalk' script as a guide.
+
+Please refer to the man page on what dnswalk checks for, and
+the format of the output.
+
+*** NOTICE ***
+	I fully realize that while some of the rules are not in
+violation of an RFC, it might be wise to reconsider their usage
+anyway.  dnswalk was written to be a tool to let the hostmaster decide
+what are troublesome areas, not as a program that has all the answers.
+*** NOTICE ***
+
+This program was originally tested with data from the psu.edu domain.
+If your site does things differently than the way we do things, then you
+may see it report things as errors, when in fact they are "okay".
+If you notice something not being reported, or something reported that
+is not an error, please send me output!  I fully admit that I'm not
+an expert in DNS and the requirements.  My rules tend to be skewed to
+my personal feelings about what "nice" DNS databases look like.  Others
+are free to differ.  (and tell me so)
+
+Author:
+David Barr <barr@cis.ohio-state.edu>
+Lead System Administrator
+The Ohio State University, Department of Computer and Information Science
+
+Thanks:
+
+Bill Fenner - tips with perl
+Michael Fuhr - for writing Net::DNS!
+Dave Crocker - for providing the spark necessary for me to pick up
+developement of dnswalk-2.0 again.
+

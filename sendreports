@@ -1,0 +1,28 @@
+#!/bin/sh
+DATE=`date +%m/%y`
+for file in *; do
+hostmaster=`echo $file | sed 's/\./@/'`
+echo Sending report to "$hostmaster"
+(
+cat <<EOF
+The following is a report made by the 'dnswalk' program for the DNS
+data under your control.  You are getting this report because dnswalk
+found potential errors in your DNS.  Please refer to the following
+explanations of the error messages and why they are important and make
+the necessary corrections to your DNS.
+
+If you would like a more extended discussion of common mistakes people
+make in setting up and running a DNS server, see RFC 1912 at
+ftp.internic.net:/rfc/rfc1912.txt
+
+If you would like the source to the program which generates this
+data, you can get it at http://www.cis.ohio-state.edu/~barr/dnswalk/
+
+EOF
+cat ../dnswalk.errors;\
+echo "";\
+cat $file;\
+) | /usr/ucb/Mail -s "DNS error report for $DATE" $hostmaster
+# ) | cat >/tmp/reports/$file
+sleep 1
+done

@@ -1,0 +1,414 @@
+#!/usr/contrib/bin/perl
+#
+# dnswalk    Walk through a DNS tree, pulling out zone data and
+# dumping it in a directory tree
+#
+# $Id: dnswalk,v 1.18 1997/10/06 13:23:58 barr Exp barr $
+#
+# check data collected for legality using standard resolver
+#
+# invoke as dnswalk domain > logfile
+# Options:
+#    -r    Recursively descend subdomains of domain
+#    -i    Suppress check for invalid characters in a domain name.
+#    -a    turn on warning of duplicate A records.
+#    -d    Debugging
+#    -m    Check only if the domain has been modified.  (Useful only if
+#          dnswalk has been run previously.)
+#    -F    Enable "facist" checking.  (See man page)
+#    -l    Check lame delegations
+
+use Getopt::Std;
+use IO::Socket;
+use Net::DNS;
+
+getopts("D:rfiadmFl");
+
+$num_error{'FAIL'}=0;		# failures to access data
+$num_error{'WARN'}=0;		# questionable data
+$num_error{'BAD'}=0;		# bad data
+
+# Where all zone transfer information is saved.  You can change this to
+# something like /tmp/dnswalk if you don't want to clutter up the current
+# directory
+if ($opt_D) {
+    $basedir = $opt_D;
+} else {
+    $basedir = ".";
+}
+($domain = $ARGV[0]) =~ tr/A-Z/a-z/;
+if ($domain !~ /\.$/) {
+    die "Usage: dnswalk domain\ndomain MUST end with a '.'\n";
+}
+if (! -d $basedir) {
+	mkdir($basedir,0777) || die "FAIL: Cannot create $basedir: $!\n";
+}
+
+&dowalk($domain);
+print STDERR "$num_error{'FAIL'} failures, $num_error{'WARN'} warnings, $num_error{'BAD'} errors.\n";
+exit $num_error{'BAD'};
+
+sub dowalk {
+    my (@subdoms);
+    my (@sortdoms);
+    my ($domain)=$_[0];
+    $modified=0;
+    return unless $domain;
+    print "Checking $domain\n";
+    @subdoms=&doaxfr($domain);
+    &check_zone($domain) if (defined(@zone) && @zone);
+    undef @zone;
+    return if (!(defined(@subdoms) && @subdoms));
+    @sortdoms = sort byhostname @subdoms;
+    local ($subdom);
+    if ($opt_r) {
+        foreach $subdom (@sortdoms) {
+            &dowalk($subdom);
+        }
+    }
+}
+# try to get a zone transfer, trying each listed authoritative server if
+# if fails.
+sub doaxfr {
+    local ($domain)=@_[0];
+    local (%subdoms)=();
+    local ($subdom);
+    local(@servers) = &getauthservers($domain);
+    &printerr("BAD", "$domain has only one authoritative nameserver\n") 
+	if (scalar(@servers) == 1);
+    &printerr("BAD", "$domain has NO authoritative nameservers!\n")
+	if (scalar(@servers) == 0);
+    SERVER:
+    foreach $server (@servers) {
+        print STDERR "Getting zone transfer of $domain from $server...";
+	my $res = new Net::DNS::Resolver;
+	$res->nameservers($server);
+	@zone=$res->axfr($domain);
+	unless (defined(@zone) && @zone) {
+	    print STDERR "failed\n";
+		&printerr("FAIL",
+			"Zone transfer of $domain from $server failed: ".
+			$res->errorstring. "\n");
+		next SERVER;
+	}
+	@subdoms=undef;
+        foreach $rr (@zone) {
+            if ($rr->type eq "NS") {
+		$subdom = $rr->name;
+                $subdom =~ tr/A-Z/a-z/;
+                if ((!&equal($subdom,$domain)) && ( !$subdoms{$subdom})) {
+                    $subdoms{$subdom}=1;
+                }
+            }
+        }
+        print STDERR "done.\n";
+        last SERVER;
+    } # foreach #
+    unless (defined(@zone) && @zone) {
+	    &printerr("BAD","All zone transfer attempts of $domain failed!\n");
+	    return undef;
+    }
+    return (keys %subdoms);
+}
+
+sub getauthservers {
+    my ($domain)=$_[0];
+    my ($master)=&getmaster($domain);
+    my ($foundmaster)=0;
+    my ($ns);
+    my ($ns_tmp);
+    my ($res);
+    my ($ns_req);
+    my (@servers);
+    my (%servhash);
+    return if (!$master);  # this is null if there is no SOA or not found
+    return if (!$domain);
+    $res = new Net::DNS::Resolver;
+    $ns_req = $res->query($domain, "NS");
+    &printerr("FAIL", "No nameservers found for $domain: ". 
+	$res->errorstring ."\n") 
+	    unless (defined($ns_req) and ($ns_req->header->ancount > 0));
+    foreach $ns ($ns_req->answer) {
+	$ns_tmp = $ns->nsdname;
+	$ns_tmp =~ tr/A-Z/a-z/;
+	if (&equal($ns_tmp,$master)) {
+	    $foundmaster=1;   # make sure the master is at the top
+	} else {
+	    push(@servers,$ns_tmp) if ($servhash{$ns_tmp}++<1);
+	}
+    }
+    if ($foundmaster) {
+	unshift(@servers,$master);
+    }
+    return @servers;
+}
+
+# return 'master' server for zone
+sub getmaster {
+    my ($zone)=$_[0];
+    my ($res) = new Net::DNS::Resolver;
+    my ($packet) = new Net::DNS::Packet($zone, "SOA", "IN");
+    my ($soa_req) = $res->send($packet);
+    unless (defined($soa_req)) {
+	&printerr("FAIL", "Cannot get SOA record for $zone:". 
+	    $res->errorstring ."\n");
+	return "";
+    }
+    unless (($soa_req->header->ancount >= 1) && 
+	   (($soa_req->answer)[0]->type eq "SOA")) {
+	&printerr("BAD", "SOA record not found for $zone\n");
+	return "";
+    }
+    return ($soa_req->answer)[0]->mname;
+}
+
+# open result of zone tranfer and check lots of nasty things
+# here's where the fun begins
+sub check_zone {
+    my ($domain)=$_[0];
+    local (%glues)=();	# look for duplicate glue (A) records
+    local ($name, $aliases, $addrtype, $length, @addrs);
+    local ($prio,$mx);
+    local ($soa,$contact);
+    local ($lastns);	# last NS record we saw
+    local (@keys);	# temp variable
+    foreach $rr (@zone) {
+	# complain about invalid chars only for mail names
+        if ((($rr->type eq "A") || ($rr->type eq "MX")) && (!$opt_i) &&
+	    ($rr->name =~ /[^\*][^-A-Za-z0-9.]/)) {
+            &printerr("WARN", $rr->name .": invalid character(s) in name\n");
+        }
+        if ($rr->type eq "SOA") {
+	    print STDERR 's' if $opt_d;
+	    print "SOA=". $rr->mname ."	contact=". $rr->rname ."\n";
+	    # basic address check.  No "@", and user.dom.ain (two or more dots)
+	    if (($rr->rname =~ /@/)||!($rr->rname =~ /\..*\./)) {
+		&printerr("WARN", "SOA contact name (". 
+		    $rr->rname .") is invalid\n");
+	    }
+        } elsif ($rr->type eq "PTR") {
+            print STDERR 'p' if $opt_d;
+            if (scalar((@keys=split(/\./,$rr->name))) == 6 ) {
+                # check if forward name exists, but only if reverse is
+                # a full IP addr
+                # skip ".0" networks
+                if ($keys[0] ne "0") {
+                   ($name, $aliases, $addrtype, $length,
+			    @addrs)=gethostbyname($rr->ptrdname);
+#                   if (!(($name, $aliases, $addrtype, $length,
+#			    @addrs)=gethostbyname($rr->ptrdname))) {
+#                        &printerr("FAIL", "gethostbyname(". 
+#			    $rr->ptrdname ."): $!\n");
+#                   }
+#                   else {
+                        if (!$name) {
+                            &printerr("WARN", $rr->name
+				." PTR ". $rr->ptrdname .": unknown host\n");
+                        }
+                        elsif (!&equal($name,$rr->ptrdname)) {
+                            &printerr("WARN", $rr->name 
+			      ." PTR ". $rr->ptrdname .": CNAME (to $name)\n");
+                        }    
+                        elsif (!&matchaddrlist($rr->name)) {
+                            &printerr("WARN", $rr->name
+			     ." PTR ". $rr->ptrdname .": A record not found\n");
+                        }
+#                   }
+                }
+            }
+        } elsif (($rr->type eq "A") ) {
+            print STDERR 'a' if $opt_d;
+	    # check to see that a reverse PTR record exists
+            ($name,$aliases,$addrtype,$length,@addrs)=gethostbyaddr(pack('C4',
+		    split(/\./,$rr->address)),2);
+	    if (!$name) {
+		# hack - allow RFC 1101 netmasks encoding
+		if ($rr->address !=~ /^255/) {
+		    &printerr("WARN", $rr->name ." A ".
+			$rr->address .": no PTR record\n");
+		}
+	    }
+	    elsif ($opt_F && !&equal($name,$rr->name)) {
+		# Filter out "hostname-something" (like "neptune-le0")
+		if (index(split (/\./, $rr->name, 2) . "-", 
+			    split (/\./, $name, 2)) == -1 ) {
+			&printerr("WARN", $rr->name ." A ". 
+			    $rr->address .": points to $name\n") 
+			    if ((split(/\./,$name))[0] ne "localhost");
+		}
+	    }
+	    if ($main'opt_a) {
+		# keep list in %glues, report any duplicates
+		if ($glues{$rr->address} eq "") {
+		    $glues{$rr->address}=$rr->name;
+		}
+		elsif (($glues{$rr->address} eq $rr->name) &&
+			(!&equal($lastns,$domain))) {
+		    &printerr("WARN", $rr->name
+			.": possible duplicate A record (glue of $lastns?)\n");
+		}
+	    }
+        } elsif ($rr->type eq "NS") {
+            $lastns=$rr->name;
+            print STDERR 'n' if $opt_d;
+            # check to see if object of NS is real
+            &checklamer($rr->name,$rr->nsdname) if ($main'opt_l);
+	    # check for bogusnesses like NS->IP addr
+	    if (&isipv4addr($rr->nsdname)) {
+		&printerr("BAD", $rr->name
+			." NS ". $rr->nsdname .": Nameserver must be a hostname\n");
+	    }
+            ($name, $aliases, $addrtype, $length,
+		    @addrs)=gethostbyname($rr->nsdname);
+#            if (!(($name, $aliases, $addrtype, $length,
+#		    @addrs)=gethostbyname($rr->nsdname))) {
+#                &printerr("FAIL", "gethostbyname(". $rr->nsdname ."): $!\n");
+#            }
+#            else {
+                if (!$name) {
+                    &printerr("BAD", $rr->name
+			." NS ". $rr->nsdname .": unknown host\n");
+                } elsif (!&equal($name,$rr->nsdname)) {
+                    &printerr("BAD", $rr->name
+			." NS ". $rr->nsdname .": CNAME (to $name)\n");
+                }
+#            }
+        } elsif ($rr->type eq "MX") {
+            print STDERR 'm' if $opt_d;
+            # check to see if object of mx is real
+	    if (&isipv4addr($rr->exchange)) {
+		&printerr("BAD", $rr->name
+			." MX ". $rr->exchange .": Mail exchange must be a hostname\n");
+	    }
+            ($name, $aliases, $addrtype, $length,
+		    @addrs)=gethostbyname($rr->exchange);
+#            if (!(($name, $aliases, $addrtype, $length,
+#		    @addrs)=gethostbyname($rr->exchange))) {
+#                &printerr("FAIL", "gethostbyname(". $rr->exchange ."): $!\n");
+#            }
+#            else {
+                if (!$name) {
+                    &printerr("WARN", $rr->name
+			." MX ". $rr->exchange .": unknown host\n");
+                }
+                elsif (!&equal($name,$rr->exchange)) {
+                    &printerr("WARN", $rr->name
+			." MX ". $rr->exchange .": CNAME (to $name)\n");
+                }
+#            }
+        } elsif ($rr->type eq "CNAME") {
+            print STDERR 'c' if $opt_d;
+            ($name, $aliases, $addrtype, $length,
+		    @addrs)=gethostbyname($rr->cname);
+	    if (&isipv4addr($rr->cname)) {
+		&printerr("BAD", $rr->name
+			." CNAME ". $rr->cname .": alias must be a hostname\n");
+	    }
+#            if (!(($name, $aliases, $addrtype, $length,
+#		    @addrs)=gethostbyname($rr->cname))) {
+#                &printerr("FAIL", "gethostbyname(". $rr->cname ."): $!\n");
+#            }
+#            else {
+                if (!$name) {
+                    &printerr("WARN", $rr->name
+			." CNAME ". $rr->cname .": unknown host\n");
+                } elsif (!&equal($name,$rr->cname)) {
+                    &printerr("WARN", $rr->name
+			." CNAME ". $rr->cname .": CNAME (to $name)\n");
+                }
+#            }
+        }
+    }
+    print STDERR "\n" if $opt_d;
+    close(FILE);
+}
+
+# prints an error message, suppressing duplicates
+sub printerr {
+    my ($type, $err)=@_;
+    if ($errlist{$err}==undef) {
+	print "$type: $err";
+	$num_error{$type}++;
+	print STDERR "!" if $opt_d;
+	$errlist{$err}=1;
+    } else {
+	print STDERR "." if $opt_d;
+    }
+}
+
+sub equal {
+    # Do case-insensitive string comparisons
+    local ($one)= $_[0];
+    local ($two)= $_[1];
+    $stripone=$one;
+    if (chop($stripone) eq '.') {
+	$one=$stripone;
+    }
+    $striptwo=$two;
+    if (chop($striptwo) eq '.') {
+	$two=$striptwo;
+    }
+    $one =~ tr/A-Z/a-z/;
+    $two =~ tr/A-Z/a-z/;
+    return ($one eq $two);
+}
+
+# check if argument looks like an IPv4 address
+sub isipv4addr {
+    my ($host)=$_[0];
+    my ($one,$two,$three,$four);
+    ($one,$two,$three,$four)=split(/\./,$host);
+    my $whole="$one$two$three$four";
+    # strings evaluated as numbers are zero
+    return (($whole+0) eq $whole);
+}
+sub matchaddrlist {
+    local($match)=pack('C4', reverse(split(/\./,$_[0],4)));
+    local($found)=0;
+    foreach $i (@addrs) {
+        $found=1 if ($i eq $match);
+    }
+    return $found;
+}
+
+# there's a better way to do this, it just hasn't evolved from
+# my brain to this program yet.
+sub byhostname {
+    @c = reverse(split(/\./,$a));
+    @d = reverse(split(/\./,$b));
+    for ($i=0;$i<=(($#c > $#d) ? $#c : $#d) ;$i++) {
+        next if $c[$i] eq $d[$i];
+        return -1 if $c[$i] eq "";
+        return  1 if $d[$i] eq "";
+        if ($c[$i] eq int($c[$i])) {
+            # numeric
+            return $c[$i] <=> $d[$i];
+        }
+        else {
+            # string
+            return $c[$i] cmp $d[$i];
+        }
+    }
+    return 0;
+}
+
+sub checklamer {
+    my ($zone,$nameserver)=@_;
+    my ($packet) = new Net::DNS::Packet($zone, "SOA", "IN");
+    my ($soa_req);
+    my ($res) = new Net::DNS::Resolver;
+    unless ($res->nameservers($nameserver)) {
+	&printerr("FAIL", "Cannot find address for nameserver: ".
+	    $res->errorstring. "\n");
+    }
+    $soa_req = $res->send($packet);
+    unless (defined($soa_req)) {
+	&printerr("FAIL",
+	    "Cannot get SOA record for $zone from $nameserver (lame?): ".
+		$res->errorstring ."\n");
+	return;
+    }
+    &printerr("BAD", "$zone NS $nameserver: lame NS delegation\n") 
+	unless ($soa_req->header->aa);
+    return;
+}

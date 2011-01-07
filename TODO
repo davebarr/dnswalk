@@ -1,0 +1,18 @@
+replace remaining gethostby*() calls with Net::DNS calls.  (better
+error reporting)
+
+compare serial number of zone transfer data and report differences
+
+Check RP records that they point to a TXT record.
+
+Check for CNAME and other data.  (modern BIND versions disallow this,
+but not everyone sadly is up to date)
+
+Check parent delegation (a la doc) and check for lame delegations.
+Compare serial numbers of all NS servers and report differences.
+(a la doc)
+
+./dnswalk non-existant.domain doesn't generate a very useful message
+
+complete RFC 1101 check.. A records in rev file
+

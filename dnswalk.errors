@@ -1,0 +1,96 @@
+     The following the list of error messages that  dnswalk  will
+     return  if  it  sees  a potential problem with the database.
+     Duplicate messages will be suppressed automatically for each
+     zone.
+     X PTR Y: unknown host
+          X is a PTR record to Y, but Y is not a valid host (no A
+          record).   These  are often left over from when someone
+          deleted a host from the DNS and forgot  to  delete  the
+          PTR record.  These records should be removed.
+     X PTR Y: A record not found
+          X is a PTR record to Y, but the IP  address  associated
+          with  the PTR record is not listed as an address for Y.
+          There should be an A record for every valid IP  address
+          for  a  host.   Many Internet services will not talk to
+          you if you have mismatched PTR records.
+     X PTR Y: CNAME (to Z)
+          X is a PTR record to Y, but Y is a  CNAME  to  Z.   PTR
+          records should point to the real name of a host, not an
+          alias.
+     X CNAME Y: unknown host
+          X is aliased to Y, but Y is not  a  valid  host  (no  A
+          record).  This is a stale entry and should be removed.
+     X CNAME Y: CNAME (to Z)
+          X is aliased to Y, but  Y  is  aliased  to  Z.   CNAMEs
+          should  not be chained together.  It has been known  to
+          cause problems with some software.
+     X MX Y: unknown host
+          X is an MX to Y, but Y  is  not  a  valid  host  (no  A
+          record).  This is a stale entry and should be removed.
+     X MX Y: CNAME (to Z)
+          X is an MX to Y, but Y is an alias for Z.   MX  records
+          must point to the canonical name, not an alias.
+     X A Y: no PTR record
+          X has an IP address Y, but there is no  PTR  record  to
+          map  the  IP  address Y back to a hostname (usually X).
+          Many Internet servers (such as anonymous  FTP  servers)
+          will not talk to addresses that don't have PTR records.
+     warning: X has only one authoritative nameserver
+          Zones  should  have  more  than one authoritative name-
+          server, in case one is down or unreachable.  Preferably
+          one should be off-site.  Make sure the parent and child
+          nameservers list all authoritative nameservers for a
+          zone in the NS list.
+     X: invalid character(s) in name
+          Allowable characters in a domain  name  are  the  ASCII
+          letters a through Z the digits 0 through 9, and the "-"
+          character.  A "." may be used only as a domain  separa-
+          tor. Using non-standard characters can cause unexpected
+          software problems.
+     X: domain occurred twice, forgot trailing '.'?
+          A sanity check which looks for "dom.ain.dom.ain." in  a
+          name.   This  is  often  caused  by forgetting to put a
+          trailing '.' on the end of a name.
+     X A Y: points to Z
+          X has Y for an IP address, but the PTR  record  associ-
+          ated  with  Y  returns  "Z" as the name associated with
+          that host.  This is not necessarily an error (for exam-
+          ple  if you have an A record for your domain name), but
+          may be an indication of an A record which points to the
+          wrong  host,  or a PTR record  that points to the wrong
+          host.  You  will  get  this  error if you are trying to
+	  alias one host to another with an A record.  You should
+	  use a CNAME instead.
+     X NS Y: lame NS delegation
+          Y is a listed nameserver for  zone  X,  but  Y  is  not
+          returning  authoritative data for zone X.  This is usu-
+          ally the result of a lack of communication on the  part
+          of  the  respective  hostmasters.  Lame delegations are
+          not fatal problems except in severe  cases,  they  just
+          tend  to  create  significant increases in DNS traffic.
+          NS records for the parent and child domains  should  be
+          consistent,  and  each  server  listed in the NS record
+          MUST  be  able  to  answer  with authoritative data, by
+          being  explicitly  configured as a primary or secondary
+          for the zone.
+     X NS Y: nameserver error (lame?)
+          These  are any errors returned while  contacting  other
+          nameservers  (like  connection refused or timeout) This
+          could  mean a lame delegation (the host is  not running
+          a  nameserver  or is misconfigured), or simply that the
+          nameserver is temporarily unreachable.
+     Cannot check X: no available nameservers!
+	  The  X  zone  was delegated with NS records but all the
+	  nameservers  for the zone are either unavailable or say
+	  that they have no data for the zone (are lame).  Verify
+	  that the X zone isn't a typo, and if not make sure that
+	  all  the  listed  nameservers  are configured to answer
+	  with data for the zone.
+
+SEE ALSO
+     RFC 1034 - "DOMAIN NAMES - CONCEPTS AND FACILITIES"
+     RFC 1035 - "DOMAIN NAMES - IMPLEMENTATION AND SPECIFICATION"
+     RFC 1123 - "Requirements for Internet Hosts -- Application and Support"
+     Paul Albitz, Cricket Liu: "DNS and BIND" O'Reilly & Associates.
+     RFC 1912 - "Common DNS Operational and Configuration Errors"
+     http://www.dns.net/dnsrd/  - DNS Resources Directory

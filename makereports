@@ -1,0 +1,30 @@
+#!/usr/contrib/bin/perl
+# This takes output from dnswalk and makes a "rep.orts" directory
+# with one file per contact.  Great for sending mail to all the admins.
+
+mkdir("rep.orts",0777);
+
+while (<>) {
+	if (/^Checking (.*).$/) {
+		$zone=$1;
+		next;
+	}
+	if (/^warning: .* has /) {  # ugly
+		$warning=$_;
+		next;
+	}
+	if (/^SOA.*contact=(.*)$/) {
+		close(REPORT);
+		$contact=$1;
+		$contact=~ tr/A-Z/a-z/;
+		print "writing report for $contact\n";
+		open(REPORT,">>rep.orts/$contact") || die "cannot write to rep.orts/$1: $!\n";
+		print REPORT "Potential errors for zone: $zone\n";
+		if ($warning) {
+			print REPORT $warning;
+			undef $warning;
+		}
+	}
+	print REPORT;
+}
+close(REPORT);
