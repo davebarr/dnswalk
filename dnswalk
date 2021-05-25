@@ -58,7 +58,7 @@ sub dowalk {
     @subdoms=&doaxfr($domain);
     &check_zone($domain) if (@zone);
     undef @zone;
-    return if (!(@subdoms));
+    return if (!@subdoms);
     @sortdoms = sort byhostname @subdoms;
     local ($subdom);
     if ($opt_r) {
@@ -180,11 +180,13 @@ sub check_zone {
         }
         if ($rr->type eq "SOA") {
 	    print STDERR 's' if $opt_d;
-	    print "SOA=". $rr->mname ."	contact=". $rr->rname ."\n";
+	    my @soa = split(/\s+/,$rr->rdstring);
+	    my $rname = $soa[1];
+	    print "SOA=". $rr->mname ."	contact=". $rname ."\n";
 	    # basic address check.  No "@", and user.dom.ain (two or more dots)
-	    if (($rr->rname =~ /@/)||!($rr->rname =~ /\..*\./)) {
+	    if (($rname =~ /@/)||!($rname =~ /[^.]+(\.[^.]+){2,}/)) {
 		&printerr("WARN", "SOA contact name (". 
-		    $rr->rname .") is invalid\n");
+		    $rname .") is invalid\n");
 	    }
         } elsif ($rr->type eq "PTR") {
             print STDERR 'p' if $opt_d;
