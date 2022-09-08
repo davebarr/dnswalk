@@ -17,12 +17,16 @@
 #          dnswalk has been run previously.)
 #    -F    Enable "facist" checking.  (See man page)
 #    -l    Check lame delegations
+#    -D    Base directory for saving transfered zones
+#    -s    Stealthmaster to do AXFR from - ip numbers only!
+#    -c    Disable CNAME-chain check - CNAME chains are now all over!
 
 use Getopt::Std;
 use IO::Socket;
 use Net::DNS;
+use Data::Dumper;
 
-getopts("D:rfiadmFl");
+getopts("D:s:rcfiadmFl");
 
 $num_error{'FAIL'}=0;		# failures to access data
 $num_error{'WARN'}=0;		# questionable data
@@ -36,6 +40,7 @@ if ($opt_D) {
 } else {
     $basedir = ".";
 }
+
 ($domain = $ARGV[0]) =~ tr/A-Z/a-z/;
 if ($domain !~ /\.$/) {
     die "Usage: dnswalk domain\ndomain MUST end with a '.'\n";
@@ -86,10 +91,10 @@ sub doaxfr {
 	@zone=$res->axfr($domain);
 	unless (@zone) {
 	    print STDERR "failed\n";
-		&printerr("FAIL",
-			"Zone transfer of $domain from $server failed: ".
-			$res->errorstring. "\n");
-		next SERVER;
+	    &printerr("FAIL",
+		      "Zone transfer of $domain from $server failed: ".
+		      $res->errorstring. "\n");
+	    next SERVER;
 	}
 	@subdoms=undef;
         foreach $rr (@zone) {
@@ -139,6 +144,10 @@ sub getauthservers {
     }
     if ($foundmaster) {
 	unshift(@servers,$master);
+    }
+    if ($opt_s) {
+        # Insert stealth master first
+	unshift(@servers,$opt_s);
     }
     return @servers;
 }
@@ -316,7 +325,7 @@ sub check_zone {
 			." CNAME ". $rr->cname .": unknown host\n");
                 } elsif (!&equal($name,$rr->cname)) {
                     &printerr("WARN", $rr->name
-			." CNAME ". $rr->cname .": CNAME (to $name)\n");
+		        ." CNAME ". $rr->cname .": CNAME (to $name)\n") unless $opt_c;
                 }
 #            }
         }
