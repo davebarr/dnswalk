@@ -94,7 +94,6 @@ sub doaxfr {
 	    &printerr("FAIL",
 		      "Zone transfer of $domain from $server failed: ".
 		      $res->errorstring. "\n");
-	    exit 1;
 	    next SERVER;
 	}
 	@subdoms=undef;
