@@ -308,26 +308,7 @@ sub check_zone {
                 }
 #            }
         } elsif ($rr->type eq "CNAME") {
-            print STDERR 'c' if $opt_d;
-            ($name, $aliases, $addrtype, $length,
-		    @addrs)=gethostbyname($rr->cname);
-	    if (&isipv4addr($rr->cname)) {
-		&printerr("BAD", $rr->name
-			." CNAME ". $rr->cname .": alias must be a hostname\n");
-	    }
-#            if (!(($name, $aliases, $addrtype, $length,
-#		    @addrs)=gethostbyname($rr->cname))) {
-#                &printerr("FAIL", "gethostbyname(". $rr->cname ."): $!\n");
-#            }
-#            else {
-                if (!$name) {
-                    &printerr("WARN", $rr->name
-			." CNAME ". $rr->cname .": unknown host\n");
-                } elsif (!&equal($name,$rr->cname)) {
-                    &printerr("WARN", $rr->name
-		        ." CNAME ". $rr->cname .": CNAME (to $name)\n") unless $opt_c;
-                }
-#            }
+	    checkcname($rr);
         }
     }
     print STDERR "\n" if $opt_d;
@@ -422,4 +403,62 @@ sub checklamer {
     &printerr("BAD", "$zone NS $nameserver: lame NS delegation\n") 
 	unless ($soa_req->header->aa);
     return;
+}
+
+sub getanswer {
+    my ($reply) = @_;
+
+    my @answers = ();
+
+    return () if !$reply;
+
+    foreach my $rr ($reply->answer) {
+	if ($rr->can("address")) {
+	    push(@answers,$rr->address);
+	} elsif ($rr->can("exchange")) { # MX!
+	    push(@answers,$rr->exchange);
+	} elsif ($rr->can("cname")) {
+	    push(@answers,$rr->cname);
+	} else {
+	    print "Don't know how to handle ", $reply->print, "\n";
+	    exit 1;
+	}
+    }
+    return @answers;
+}
+
+
+sub checkcname {
+    my ($rr) = @_;
+    # Check the thing a CNAME points to
+    print STDERR 'c' if $opt_d;
+    if (&isipv4addr($rr->cname)) {
+	&printerr("BAD", $rr->name
+		  ." CNAME ". $rr->cname .": alias must be a hostname\n");
+    }
+    my $res = new Net::DNS::Resolver;
+    print "Looking up ", $rr->cname,"\n" if $opt_d;
+    my $a_rr = $res->search($rr->cname);
+    my $mx_rr = $res->search($rr->cname,'MX');
+    # Why AAAA? Because it makes little difference when so few people
+    # can reach it.  Why not ANY?  It's fallen out of favour and a
+    # cache may return whatever is cached which may be less than we
+    # want.
+
+    if (!getanswer($a_rr) && !getanswer($mx_rr)) {
+	&printerr("WARN", $rr->name.
+		  " CNAME ". $rr->cname .": unknown host\n");
+    }
+
+    # Operator does not want to know about cname chains so quit.
+    return if $opt_c;
+
+    # Check if it's a CNAME
+    my $cn_rr = $res->search($rr->cname,'CNAME');
+    my ($name,undef) = getanswer($cn_rr);
+
+    if ($name) {
+	&printerr("WARN", $rr->name.
+		  " CNAME ". $rr->cname .": CNAME (to $name)\n");
+    }
 }
