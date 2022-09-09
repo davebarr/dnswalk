@@ -1,0 +1,14 @@
+# Comment starts in first column
+#
+# You can use this file to list subnets which we do not expect to have
+# PTRs corresponding to our A records.
+#
+# * Make sure to add a mask to all entries, either in quad-octet format or in /cidr format.
+# * For single IPs (hosts) put /32.
+#
+# GLOBAL VENDORS
+#
+# Oracle Cloud
+142.0.160.0/20
+# Digital Ocean
+188.166.0.0/17
