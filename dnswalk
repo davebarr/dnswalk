@@ -9,24 +9,38 @@
 #
 # invoke as dnswalk domain > logfile
 # Options:
-#    -r    Recursively descend subdomains of domain
-#    -i    Suppress check for invalid characters in a domain name.
-#    -a    turn on warning of duplicate A records.
-#    -d    Debugging
-#    -m    Check only if the domain has been modified.  (Useful only if
-#          dnswalk has been run previously.)
-#    -F    Enable "facist" checking.  (See man page)
-#    -l    Check lame delegations
-#    -D    Base directory for saving transfered zones
-#    -s    Stealthmaster to do AXFR from - ip numbers only!
-#    -c    Disable CNAME-chain check - CNAME chains are now all over!
+#    -r        Recursively descend subdomains of domain
+#    -i        Suppress check for invalid characters in a domain name.
+#    -a        turn on warning of duplicate A records.
+#    -d        Debugging
+#    -m        Check only if the domain has been modified.  (Useful only if
+#              dnswalk has been run previously.)
+#    -F        Enable "facist" checking.  (See man page)
+#    -l        Check lame delegations
+#    -D <dir>  Base directory for saving transfered zones
+#    -s <ip>   Stealthmaster to do AXFR from - ip numbers only!
+#    -c        Disable CNAME-chain check - CNAME chains are now all over!
+#    -v <file> Load validator CNAME patterns from file. E.g.
+#              _acme-challenge, fastly-validations.com - these are built in but you may need
+#              additional patterns.
+#    -i <file> Load file of ip-subnets to ignore in reverse lookup checks - because the subnet
+#              reverse zone is out of our controll, like AWS, etc.
 
 use Getopt::Std;
 use IO::Socket;
 use Net::DNS;
 use Data::Dumper;
 
-getopts("D:s:rcfiadmFl");
+# Array of well known name patterns used in CNAMEs for validation.
+# Left hand side and right hand side of CNAME.
+@lhsvalidators = (
+    qr'^_acme-challenge\.'
+    );
+
+@rhsvalidators = (
+    );
+
+getopts("D:s:v:rcfiadmFl");
 
 $num_error{'FAIL'}=0;		# failures to access data
 $num_error{'WARN'}=0;		# questionable data
@@ -40,6 +54,8 @@ if ($opt_D) {
 } else {
     $basedir = ".";
 }
+
+load_validators($opt_v) if $opt_v;
 
 ($domain = $ARGV[0]) =~ tr/A-Z/a-z/;
 if ($domain !~ /\.$/) {
@@ -438,19 +454,21 @@ sub checkcname {
     }
     my $res = new Net::DNS::Resolver;
     print "Looking up ", $rr->cname,"\n" if $opt_d;
-    my $a_rr = $res->search($rr->cname);
+    # Query for A.  Will also get us CNAME chains to the extent that
+    # the name server we ask knows it.
+    my $a_rr = $res->search($rr->cname); 
     my $mx_rr = $res->search($rr->cname,'MX');
-    # Why AAAA? Because it makes little difference when so few people
-    # can reach it.  Why not ANY?  It's fallen out of favour and a
-    # cache may return whatever is cached which may be less than we
-    # want.
+    # Why not AAAA? Because it makes little difference when so few
+    # people can reach it.  Why not ANY?  It's fallen out of favour
+    # and a cache may return whatever is cached which may be less than
+    # we want.
 
-    if (!getanswer($a_rr) && !getanswer($mx_rr)) {
+    if (!getanswer($a_rr) && !getanswer($mx_rr) && !isvalidator($rr->name,$rr->cname)) {
 	&printerr("WARN", $rr->name.
 		  " CNAME ". $rr->cname .": unknown host\n");
     }
 
-    # Operator does not want to know about cname chains so quit.
+    # Operator does not want to know about CNAME chains so quit.
     return if $opt_c;
 
     # Check if it's a CNAME
@@ -461,4 +479,40 @@ sub checkcname {
 	&printerr("WARN", $rr->name.
 		  " CNAME ". $rr->cname .": CNAME (to $name)\n");
     }
+}
+
+
+sub load_validators {
+    # Load list of validator patterns to check against dangling CNAME cases.
+    my ($file) = @_;
+
+    open(my $fh, "<", $file) || die "FATAL: Could not open $file: $!\n";
+
+    for my $line (<$fh>) {
+	next if $line =~ /^#/;
+	chomp($line);
+	my ($side,$re) = split(/\s+/,$line,2);
+	$re =~ s/\s+$//;  # Remove trailing whitespace
+	if ($side eq 'L') {
+	    push(@lhsvalidators, qr/$re/);
+	} elsif ($side eq 'R') {
+	    push(@rhsvalidators, qr/$re/);
+	} else {
+	    die "FATAL: $file line $. does not start in 'L' or 'R'\n";
+	}
+    }
+    print "Loaded validator patterns from '$file'\n";
+}
+
+
+sub isvalidator {
+    my ($lhs,$rhs) = @_;
+
+    for my $re (@lhsvalidators) {
+	return 1 if $lhs =~ $re;
+    }
+    for my $re (@rhsvalidators) {
+	return 1 if $rhs =~ $re;
+    }
+    return 0;
 }
