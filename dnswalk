@@ -10,26 +10,35 @@
 # invoke as dnswalk domain > logfile
 # Options:
 #    -r        Recursively descend subdomains of domain
-#    -i        Suppress check for invalid characters in a domain name.
 #    -a        turn on warning of duplicate A records.
 #    -d        Debugging
-#    -m        Check only if the domain has been modified.  (Useful only if
-#              dnswalk has been run previously.)
 #    -F        Enable "facist" checking.  (See man page)
 #    -l        Check lame delegations
 #    -D <dir>  Base directory for saving transfered zones
 #    -s <ip>   Stealthmaster to do AXFR from - ip numbers only!
+#
+# Switches to disable checks
+#    -i        Suppress check for invalid characters in a domain name.
+#    -p        Disable check for PTR records corresponding to A records
 #    -c        Disable CNAME-chain check - CNAME chains are now all over!
-#    -v <file> Load validator CNAME patterns from file. E.g.
+#    -v <file> Load validator CNAME regular expression patterns from file. E.g.
 #              _acme-challenge, fastly-validations.com - these are built in but you may need
 #              additional patterns.
-#    -i <file> Load file of ip-subnets to ignore in reverse lookup checks - because the subnet
-#              reverse zone is out of our controll, like AWS, etc.
+#    -n <file> Load file of ip-subnets to ignore in reverse lookup checks - because the subnet
+#              reverse zone is out of our controll, like AWS, etc.  Subnet and CIDR notation
+#              allowed (see Net::Subnet subnet_matcher docs for more info)
+#
+# Options that seem broken or unimplemented:
+#    -m        Check only if the domain has been modified.  (Useful only if
+#              dnswalk has been run previously.)
+
 
 use Getopt::Std;
 use IO::Socket;
-use Net::DNS;
 use Data::Dumper;
+# Non-core modules you'll need:
+use Net::DNS;
+use Net::Subnet;
 
 # Array of well known name patterns used in CNAMEs for validation.
 # Left hand side and right hand side of CNAME.
@@ -40,7 +49,8 @@ use Data::Dumper;
 @rhsvalidators = (
     );
 
-getopts("D:s:v:rcfiadmFl");
+
+getopts("D:s:v:n:rcfiadmFlp");
 
 $num_error{'FAIL'}=0;		# failures to access data
 $num_error{'WARN'}=0;		# questionable data
@@ -56,6 +66,12 @@ if ($opt_D) {
 }
 
 load_validators($opt_v) if $opt_v;
+
+$ignorenets = subnet_matcher( );
+$ignorenets = load_ignorenets($opt_n) if $opt_n;
+
+# A default resolver when we don't need to query some special name server.
+$resolver = new Net::DNS::Resolver();
 
 ($domain = $ARGV[0]) =~ tr/A-Z/a-z/;
 if ($domain !~ /\.$/) {
@@ -144,10 +160,9 @@ sub getauthservers {
     my (%servhash);
     return if (!$master);  # this is null if there is no SOA or not found
     return if (!$domain);
-    $res = new Net::DNS::Resolver;
-    $ns_req = $res->query($domain, "NS");
+    $ns_req = $resolver->query($domain, "NS");
     &printerr("FAIL", "No nameservers found for $domain: ". 
-	$res->errorstring ."\n") 
+	$resolver->errorstring ."\n")
 	    unless (defined($ns_req) and ($ns_req->header->ancount > 0));
     foreach $ns ($ns_req->answer) {
 	$ns_tmp = $ns->nsdname;
@@ -171,12 +186,11 @@ sub getauthservers {
 # return 'master' server for zone
 sub getmaster {
     my ($zone)=$_[0];
-    my ($res) = new Net::DNS::Resolver;
     my ($packet) = new Net::DNS::Packet($zone, "SOA", "IN");
-    my ($soa_req) = $res->send($packet);
+    my ($soa_req) = $resolver->send($packet);
     unless (defined($soa_req)) {
 	&printerr("FAIL", "Cannot get SOA record for $zone:". 
-	    $res->errorstring ."\n");
+	    $resolver->errorstring ."\n");
 	return "";
     }
     unless (($soa_req->header->ancount >= 1) && 
@@ -214,67 +228,9 @@ sub check_zone {
 		    $rname .") is invalid\n");
 	    }
         } elsif ($rr->type eq "PTR") {
-            print STDERR 'p' if $opt_d;
-            if (scalar((@keys=split(/\./,$rr->name))) == 6 ) {
-                # check if forward name exists, but only if reverse is
-                # a full IP addr
-                # skip ".0" networks
-                if ($keys[0] ne "0") {
-                   ($name, $aliases, $addrtype, $length,
-			    @addrs)=gethostbyname($rr->ptrdname);
-#                   if (!(($name, $aliases, $addrtype, $length,
-#			    @addrs)=gethostbyname($rr->ptrdname))) {
-#                        &printerr("FAIL", "gethostbyname(". 
-#			    $rr->ptrdname ."): $!\n");
-#                   }
-#                   else {
-                        if (!$name) {
-                            &printerr("WARN", $rr->name
-				." PTR ". $rr->ptrdname .": unknown host\n");
-                        }
-                        elsif (!&equal($name,$rr->ptrdname)) {
-                            &printerr("WARN", $rr->name 
-			      ." PTR ". $rr->ptrdname .": CNAME (to $name)\n");
-                        }    
-                        elsif (!&matchaddrlist($rr->name)) {
-                            &printerr("WARN", $rr->name
-			     ." PTR ". $rr->ptrdname .": A record not found\n");
-                        }
-#                   }
-                }
-            }
+	    check_ptr($rr);
         } elsif (($rr->type eq "A") ) {
-            print STDERR 'a' if $opt_d;
-	    # check to see that a reverse PTR record exists
-            ($name,$aliases,$addrtype,$length,@addrs)=gethostbyaddr(pack('C4',
-		    split(/\./,$rr->address)),2);
-	    if (!$name) {
-		# hack - allow RFC 1101 netmasks encoding
-		if ($rr->address !=~ /^255/) {
-		    &printerr("WARN", $rr->name ." A ".
-			$rr->address .": no PTR record\n");
-		}
-	    }
-	    elsif ($opt_F && !&equal($name,$rr->name)) {
-		# Filter out "hostname-something" (like "neptune-le0")
-		if (index(split (/\./, $rr->name, 2) . "-", 
-			    split (/\./, $name, 2)) == -1 ) {
-			&printerr("WARN", $rr->name ." A ". 
-			    $rr->address .": points to $name\n") 
-			    if ((split(/\./,$name))[0] ne "localhost");
-		}
-	    }
-	    if ($main'opt_a) {
-		# keep list in %glues, report any duplicates
-		if ($glues{$rr->address} eq "") {
-		    $glues{$rr->address}=$rr->name;
-		}
-		elsif (($glues{$rr->address} eq $rr->name) &&
-			(!&equal($lastns,$domain))) {
-		    &printerr("WARN", $rr->name
-			.": possible duplicate A record (glue of $lastns?)\n");
-		}
-	    }
+	    check_a($rr);
         } elsif ($rr->type eq "NS") {
             $lastns=$rr->name;
             print STDERR 'n' if $opt_d;
@@ -324,7 +280,7 @@ sub check_zone {
                 }
 #            }
         } elsif ($rr->type eq "CNAME") {
-	    checkcname($rr);
+	    check_cname($rr);
         }
     }
     print STDERR "\n" if $opt_d;
@@ -444,7 +400,7 @@ sub getanswer {
 }
 
 
-sub checkcname {
+sub check_cname {
     my ($rr) = @_;
     # Check the thing a CNAME points to
     print STDERR 'c' if $opt_d;
@@ -452,12 +408,11 @@ sub checkcname {
 	&printerr("BAD", $rr->name
 		  ." CNAME ". $rr->cname .": alias must be a hostname\n");
     }
-    my $res = new Net::DNS::Resolver;
     print "Looking up ", $rr->cname,"\n" if $opt_d;
     # Query for A.  Will also get us CNAME chains to the extent that
     # the name server we ask knows it.
-    my $a_rr = $res->search($rr->cname); 
-    my $mx_rr = $res->search($rr->cname,'MX');
+    my $a_rr = $resolver->search($rr->cname);
+    my $mx_rr = $resolver->search($rr->cname,'MX');
     # Why not AAAA? Because it makes little difference when so few
     # people can reach it.  Why not ANY?  It's fallen out of favour
     # and a cache may return whatever is cached which may be less than
@@ -472,13 +427,117 @@ sub checkcname {
     return if $opt_c;
 
     # Check if it's a CNAME
-    my $cn_rr = $res->search($rr->cname,'CNAME');
+    my $cn_rr = $resolver->search($rr->cname,'CNAME');
     my ($name,undef) = getanswer($cn_rr);
 
     if ($name) {
 	&printerr("WARN", $rr->name.
 		  " CNAME ". $rr->cname .": CNAME (to $name)\n");
     }
+}
+
+
+sub check_ptr {
+    my ($rr) = @_;
+
+    print STDERR 'p' if $opt_d;
+    if (scalar((@keys=split(/\./,$rr->name))) == 6 ) {
+	# check if forward name exists, but only if reverse is
+	# a full IP addr
+	# skip ".0" networks
+	if ($keys[0] ne "0") {
+	    ($name, $aliases, $addrtype, $length,
+	     @addrs)=gethostbyname($rr->ptrdname);
+	    if (!$name) {
+		&printerr("WARN", $rr->name
+			  ." PTR ". $rr->ptrdname .": unknown host\n");
+	    }
+	    elsif (!&equal($name,$rr->ptrdname)) {
+		&printerr("WARN", $rr->name
+			  ." PTR ". $rr->ptrdname .": CNAME (to $name)\n");
+	    }
+	    elsif (!&matchaddrlist($rr->name)) {
+		&printerr("WARN", $rr->name
+			  ." PTR ". $rr->ptrdname .": A record not found\n");
+	    }
+	}
+    }
+}
+
+sub check_a {
+    # Check A record
+    my ($rr) = @_;
+
+    print STDERR 'a' if $opt_d;
+    # check to see that a reverse PTR record exists
+    ($name,$aliases,$addrtype,$length,@addrs)=
+	gethostbyaddr(pack('C4',
+			   split(/\./,$rr->address)),2);
+    if (!$name) {
+	# Removed RFC1101 speciallness of ending "all one" 255 octet
+	# since CIDR makes it impossible to know what is a all one or
+	# all zero network address
+	if (!ignore_missing_ptr($rr->address) and !$opt_p) {
+	    &printerr("WARN", $rr->name ." A ".
+		      $rr->address .": no PTR record\n");
+	}
+    }
+    elsif ($opt_F && !&equal($name,$rr->name)) {
+	# Filter out "hostname-something" (like "neptune-le0")
+	# *** TODO: WHY? ***
+	if (index(split (/\./, $rr->name, 2) . "-",
+		  split (/\./, $name, 2)) == -1 ) {
+	    &printerr("WARN", $rr->name ." A ".
+		      $rr->address .": points to $name\n")
+		if ((split(/\./,$name))[0] ne "localhost");
+	}
+    }
+    if ($main'opt_a) {
+	# keep list in %glues, report any duplicates
+	if ($glues{$rr->address} eq "") {
+	    $glues{$rr->address}=$rr->name;
+	}
+	elsif (($glues{$rr->address} eq $rr->name) &&
+	       (!&equal($lastns,$domain))) {
+	    &printerr("WARN", $rr->name
+		      .": possible duplicate A record (glue of $lastns?)\n");
+	}
+    }
+}
+
+
+sub load_ignorenets {
+    # Load list of nets to ignore when missing PTR records
+    my ($file) = @_;
+
+    open(my $fh, "<", $file) || die "FATAL: Loading ignore nets file: Could not open $file: $!\n";
+
+    @ignorenet = ();
+
+    for my $line (<$fh>) {
+	next if $line =~ /^#/;
+	chomp($line);
+	$line =~ s/\s+//g;
+	next if $line eq '';
+	push(@ignorenet, $line);
+    }
+    print "Loaded networks to ignore from '$file'\n";
+
+    print "Networks to ignore: ",Dumper \@ignorenet if $opt_d;
+
+    return subnet_matcher(@ignorenet);
+}
+
+
+sub ignore_missing_ptr {
+    # See if ip is in list of networks to ignore when the PTR is missing
+    my ($ip) = @_;
+
+    my $ignore = $ignorenets->($ip);
+
+    print "Ignore missing PTR of '$ip'?: ", $ignore, "\n" if $opt_d;
+
+    return $ignore;
 }
 
 
